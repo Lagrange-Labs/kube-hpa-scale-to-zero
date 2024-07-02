@@ -105,7 +105,7 @@ def build_metric_value_path(hpa) -> str:
     returns the Kube API path to retrieve the custom.metrics.k8s.io used metric.
     """
     metrics = json.loads(hpa.metadata.annotations["autoscaling.alpha.kubernetes.io/metrics"])
-    print(metrics)
+    LOGGER.info(f"metrics: {metrics}")
     try:
         custom_metric = next(m["object"] for m in metrics if m["type"] == "Object")
         assert not custom_metric.get("selector")
