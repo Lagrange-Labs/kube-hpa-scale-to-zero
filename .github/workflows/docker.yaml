@@ -2,8 +2,7 @@ name: Release Image
 
 on:
   push:
-    tags:
-      - 'kube-hpa-scale-to-zero-*'
+    branches: [ main ] 
 
 jobs:
   release:
@@ -15,7 +14,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v4
         with:
-          images: machine424/kube-hpa-scale-to-zero
+          images: lagrangelabs/kube-hpa-scale-to-zero
           tags: |
             type=match,pattern=kube-hpa-scale-to-zero-(.*),group=1
       - name: Login to DockerHub
