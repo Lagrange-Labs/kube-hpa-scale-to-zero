@@ -107,7 +107,7 @@ def build_metric_value_path(hpa) -> str:
     metrics = json.loads(hpa.metadata.annotations["autoscaling.alpha.kubernetes.io/metrics"])
     LOGGER.info(f"metrics: {metrics}")
     try:
-        custom_metric = next(m["object"] for m in metrics if m["type"] == "External")
+        custom_metric = next(m["external"] for m in metrics if m["type"] == "External")
         assert not custom_metric.get("selector")
         target = custom_metric["target"]
         assert target["kind"] == "Service"
