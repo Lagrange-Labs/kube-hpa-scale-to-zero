@@ -34,9 +34,11 @@ DYNAMIC = kubernetes.dynamic.DynamicClient(kubernetes.client.api_client.ApiClien
 class HPA:
     name: str
     namespace: str
-    metric_value_path: str
+    metric_name: str
     target_kind: str
     target_name: str
+    target_type: str
+    target_value: int
 
 
 SYNC_INTERVAL = 30
@@ -48,7 +50,6 @@ def watch_metrics() -> None:
     periodically watches metrics of HPA and scale the targets accordingly if needed.
     """
 
-    # TODO: See if we can use Kubernetes's watch mechanism
     def _watch():
         try:
             while True:
@@ -86,13 +87,15 @@ def update_hpa(metadata) -> None:
     namespaced_name = f"{hpa_namespace}/{hpa_name}"
     try:
         hpa = AUTOSCALING_V1.read_namespaced_horizontal_pod_autoscaler(namespace=hpa_namespace, name=hpa_name)
-        LOGGER.info(f"HPA: {hpa}")
+        metric_name, target_value = build_metric_value_path(hpa)
         HPAs[namespaced_name] = HPA(
             name=hpa_name,
             namespace=hpa_namespace,
-            metric_value_path=build_metric_value_path(hpa),
+            metric_name=metric_name,
             target_kind=hpa.spec.scale_target_ref.kind,
             target_name=hpa.spec.scale_target_ref.name,
+            target_type=hpa.spec.metrics[0].external.target.type,
+            target_value=target_value,
         )
     except kubernetes.client.exceptions.ApiException as exc:
         if exc.status != 404:
@@ -103,44 +106,46 @@ def update_hpa(metadata) -> None:
 
 def build_metric_value_path(hpa) -> str:
     """
-    returns the Kube API path to retrieve the custom.metrics.k8s.io used metric.
+    returns the metric name and target value for the external metric.
     """
-    metrics = json.loads(hpa.metadata.annotations["autoscaling.alpha.kubernetes.io/metrics"])
-    LOGGER.info(f"metrics: {metrics}")
-    try:
-        custom_metric = next(m["external"] for m in metrics if m["type"] == "External")
-        assert not custom_metric.get("selector")
-        target = custom_metric["target"]
-        assert target["kind"] == "Service"
-    except (StopIteration, AssertionError) as e:
-        LOGGER.exception("Only supports ONE CUSTOM metric without selector based on service for now.")
-        raise e
-
-    service_namespace = hpa.metadata.namespace
-    service_name = target["name"]
-    metric_name = custom_metric["metricName"]
-
-    return f"apis/custom.metrics.k8s.io/v1beta1/namespaces/{service_namespace}/services/{service_name}/{metric_name}"
+    metric = hpa.spec.metrics[0].external
+    metric_name = metric.metric.name
+    target_value = int(metric.target.average_value)
+    
+    return metric_name, target_value
 
 
-def get_needed_replicas(metric_value_path) -> int | None:
+def get_external_metric_value(metric_name: str, namespace: str) -> int | None:
     """
-    returns 0 if the metric value is 0, and 1 otherwise (HPA will take care of scaling up if needed)
-    returns None, if the needed replicas cannot be determined.
+    retrieves the value of the external metric.
     """
     try:
-        # We suppose the MetricValueList does contain one item
-        return min(int(DYNAMIC.request("GET", metric_value_path).items[0].value), 1)
+        metric_data = DYNAMIC.request("GET", f"apis/external.metrics.k8s.io/v1beta1/namespaces/{namespace}/{metric_name}")
+        return int(metric_data.items[0].value)
     except kubernetes.client.exceptions.ApiException as exc:
-        match exc.status:
-            case 404 | 503 | 403:
-                LOGGER.exception(f"Could not get Custom metric at {metric_value_path}: {exc}")
-            case _:
-                raise exc
+        if exc.status in {404, 503, 403}:
+            LOGGER.exception(f"Could not get external metric {metric_name} in namespace {namespace}: {exc}")
+            return None
+        else:
+            raise exc
+
+
+def get_needed_replicas(hpa: HPA) -> int | None:
+    """
+    returns the number of replicas needed based on the external metric value.
+    """
+    metric_value = get_external_metric_value(hpa.metric_name, hpa.namespace)
+    if metric_value is None:
+        return None
+    
+    if hpa.target_type == "AverageValue":
+        return max(1, (metric_value // hpa.target_value)) if metric_value > 0 else 0
+    else:
+        raise ValueError(f"Unsupported target type: {hpa.target_type}")
 
 
 def update_target(hpa: HPA) -> None:
-    needed_replicas = get_needed_replicas(hpa.metric_value_path)
+    needed_replicas = get_needed_replicas(hpa)
     if needed_replicas is None:
         LOGGER.error(f"Will not update {hpa.target_kind} {hpa.namespace}/{hpa.target_name}.")
         return
@@ -193,7 +198,7 @@ def scale_statefulset(*, namespace, name, needed_replicas) -> None:
         scale = APP_V1.read_namespaced_stateful_set_scale(namespace=namespace, name=name)
         current_replicas = scale.status.replicas
         if not scaling_is_needed(current_replicas=current_replicas, needed_replicas=needed_replicas):
-            LOGGER.info(f"No need to scale statefulset {namespace}/{name} {current_replicas=} {needed_replicas=}.")
+            LOGGER.info(f"No need to scale StatefulSet {namespace}/{name} {current_replicas=} {needed_replicas=}.")
             return
 
         scale.spec.replicas = needed_replicas
