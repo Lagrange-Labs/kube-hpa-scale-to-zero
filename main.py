@@ -72,7 +72,7 @@ def watch_hpa(args) -> None:
                 args.hpa_namespace,
                 label_selector=args.hpa_label_selector,
             ):
-                update_hpa(event["object"].metadata)
+                update_hpa(event["external"].metadata)
         except kubernetes.client.exceptions.ApiException as exc:
             if exc.status != 410:
                 raise exc
