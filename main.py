@@ -86,6 +86,7 @@ def update_hpa(metadata) -> None:
     namespaced_name = f"{hpa_namespace}/{hpa_name}"
     try:
         hpa = AUTOSCALING_V1.read_namespaced_horizontal_pod_autoscaler(namespace=hpa_namespace, name=hpa_name)
+        LOGGER.info(f"HPA: {hpa}")
         HPAs[namespaced_name] = HPA(
             name=hpa_name,
             namespace=hpa_namespace,
